@@ -1,0 +1,10 @@
+Mode:
+  mode: magnitude # [angle, magnitude]
+  # mode: angle
+
+Dataset:
+  dir: rgbd_bonn_dataset/rgbd_bonn_person_tracking2
+
+Param:
+  image_gap : 3 # set gap between two images
+  sample_step: 25 # pixel per point
