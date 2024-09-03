@@ -6,7 +6,13 @@ from segment_utils import get_instance_mask, apply_mask_to_image
 from load_utils import json_read
 import torch
 import cv2 as cv
+from concurrent.futures import ThreadPoolExecutor
 # import inverse_projection_cuda
+import sys
+import os
+# sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), 'cpp')))
+
+import inverse_projection_cpp
 
 @cuda.jit
 def inverse_projection_kernel(K: np.ndarray, 
@@ -222,6 +228,65 @@ def inverse_projection_pytorch(K, depth_image, rgb_image, instance_mask=None):
     return points.cpu().numpy(), colors.cpu().numpy(), ids.cpu().numpy() if instance_mask is not None else None
 
 
+
+def process_row(v, K, depth_image, rgb_image, instance_mask, width):
+    fx, fy = K[0, 0], K[1, 1]
+    cx, cy = K[0, 2], K[1, 2]
+    
+    points_row = np.zeros((width, 3), dtype=np.float32)
+    colors_row = np.zeros((width, 3), dtype=np.uint8)
+    ids_row = np.zeros(width, dtype=np.int8) if instance_mask is not None else None
+    
+    for u in range(width):
+        Z = depth_image[v, u]
+        if Z > 0:
+            x_n = (u - cx) / fx
+            y_n = (v - cy) / fy
+
+            X = x_n * Z
+            Y = y_n * Z
+
+            points_row[u, 0] = X
+            points_row[u, 1] = Y
+            points_row[u, 2] = Z
+
+            colors_row[u, 0] = rgb_image[v, u, 0]
+            colors_row[u, 1] = rgb_image[v, u, 1]
+            colors_row[u, 2] = rgb_image[v, u, 2]
+
+            if ids_row is not None:
+                ids_row[u] = instance_mask[v, u]
+
+    return points_row, colors_row, ids_row
+
+def inverse_projection_cpu_parallel(K, depth_image, rgb_image, instance_mask=None):
+    height, width = depth_image.shape
+
+    # 初始化输出数组
+    points = np.zeros((height, width, 3), dtype=np.float32)
+    colors = np.zeros((height, width, 3), dtype=np.uint8)
+    ids = np.zeros((height, width), dtype=np.int8) if instance_mask is not None else None
+
+    # 并行处理每一行
+    with ThreadPoolExecutor() as executor:
+        results = list(executor.map(lambda v: process_row(v, K, depth_image, rgb_image, instance_mask, width), range(height)))
+
+    # 收集结果
+    for v, (points_row, colors_row, ids_row) in enumerate(results):
+        points[v, :, :] = points_row
+        colors[v, :, :] = colors_row
+        if ids is not None:
+            ids[v, :] = ids_row
+
+    # 将 2D 数组展平成 1D 数组
+    points = points.reshape(-1, 3)
+    colors = colors.reshape(-1, 3)
+    if ids is not None:
+        ids = ids.reshape(-1)
+    
+    return points, colors, ids
+
+
 def pcd_segment_with_instance_id(pcd, color, id_list, instance_id):
     # 创建一个掩码，其中实例 ID 与指定 ID 匹配
     instance_indices = np.where(id_list == instance_id)
@@ -237,7 +302,7 @@ def pcd_segment_with_instance_id(pcd, color, id_list, instance_id):
 if __name__ == "__main__":
 
 
-    start_time = time.time()
+    
     # 假设我们有一个相机内参矩阵 K
     K = np.array([[535.4,   0.0, 320.1],
                   [  0.0, 539.2, 247.6],
@@ -267,17 +332,20 @@ if __name__ == "__main__":
     print(sem_dict.items())
     instance_mask = np.asarray(instance_mask, dtype=np.int8)
     print(instance_mask)
-
+    start_time = time.time()
     # 使用 CUDA 加速的逆向投影生成点云
-    point_cloud, rgb, id = inverse_projection_cuda_numba(K, depth_image, rgb_image, instance_mask[0])
+    # point_cloud, rgb, id = inverse_projection_cuda_numba(K, depth_image, rgb_image, instance_mask[0])
+    # point_cloud, rgb, id = inverse_projection_cpu_parallel(K, depth_image, rgb_image, instance_mask[0])
     # point_cloud, rgb, id = inverse_projection_cpu(K, depth_image, rgb_image, instance_mask[0])
     # point_cloud, rgb, id = inverse_projection_pytorch(K, depth_image, rgb_image, instance_mask[0])
+    point_cloud, rgb, id = inverse_projection_cpp.inverse_projection(K, depth_image, rgb_image, instance_mask[0])
+    print("Time:", time.time() - start_time)
     non_zero_indices = np.nonzero(point_cloud[:, 2])
     
     point_cloud = point_cloud[non_zero_indices]
     rgb = rgb[non_zero_indices]
     id = id[non_zero_indices]
-    print("Time:", time.time() - start_time)
+    
     
     # 打印结果
     print("Generated point cloud shape:", point_cloud.shape)
