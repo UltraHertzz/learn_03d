@@ -2,6 +2,7 @@
 #include <pybind11/numpy.h>
 #include <pybind11/stl.h>
 #include <vector>
+#include <omp.h>
 
 namespace py = pybind11;
 
@@ -46,10 +47,11 @@ std::tuple<py::array_t<float>, py::array_t<uint8_t>, py::array_t<int8_t>> invers
     float cy = K_ptr[5];
 
     // 逆向投影过程
+    #pragma omp parallel for
     for (int v = 0; v < height; ++v) {
         for (int u = 0; u < width; ++u) {
             int idx = v * width + u;
-            float Z = depth_ptr[idx];
+            float Z = depth_ptr[idx]/5000.0;
 
             if (Z > 0) {
                 float x_n = (u - cx) / fx;
@@ -83,6 +85,50 @@ std::tuple<py::array_t<float>, py::array_t<uint8_t>, py::array_t<int8_t>> invers
     }
     
     return std::make_tuple(points_array, colors_array, ids_array);
+// 
+    // 过滤掉全为0的点
+    // std::vector<float> filtered_points;
+    // std::vector<uint8_t> filtered_colors;
+    // std::vector<int8_t> filtered_ids;
+
+    // // 并行化过滤操作
+    // #pragma omp parallel for
+    // for (size_t i = 0; i < points.size(); i += 3) {
+    //     if (!(points[i] == 0.0f && points[i + 1] == 0.0f && points[i + 2] == 0.0f)) {
+    //         #pragma omp critical
+    //         {
+    //             filtered_points.push_back(points[i]);
+    //             filtered_points.push_back(points[i + 1]);
+    //             filtered_points.push_back(points[i + 2]);
+    //             filtered_colors.push_back(colors[i]);
+    //             filtered_colors.push_back(colors[i + 1]);
+    //             filtered_colors.push_back(colors[i + 2]);
+    //             if (!ids.empty()) {
+    //                 filtered_ids.push_back(ids[i / 3]);
+    //             }
+    //         }
+    //     }
+    // }
+
+    // auto points_array = py::array_t<float>(
+    //     {static_cast<py::ssize_t>(filtered_points.size() / 3), 3},
+    //     filtered_points.data()
+    // );
+
+    // auto colors_array = py::array_t<uint8_t>(
+    //     {static_cast<py::ssize_t>(filtered_colors.size() / 3), 3},
+    //     filtered_colors.data()
+    // );
+
+    // py::array_t<int8_t> ids_array;
+    // if (!filtered_ids.empty()) {
+    //     ids_array = py::array_t<int8_t>(
+    //         {static_cast<py::ssize_t>(filtered_ids.size())},
+    //         filtered_ids.data()
+    //     );
+    // }
+
+    // return std::make_tuple(points_array, colors_array, ids_array);
 }
 
 PYBIND11_MODULE(inverse_projection_cpp, m) {

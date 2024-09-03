@@ -8,6 +8,8 @@ ext_modules = [
     Pybind11Extension(
         "inverse_projection_cpp",
         ["inverse_projection.cpp"],
+        extra_compile_args=["-fopenmp"],  # 添加 OpenMP 支持
+        extra_link_args=["-fopenmp"]
     ),
 ]
 

@@ -1,18 +1,17 @@
-import numpy as np
-from numba import cuda
+import os
+import sys
 import time
-import open3d as o3d
-from segment_utils import get_instance_mask, apply_mask_to_image
-from load_utils import json_read
 import torch
 import cv2 as cv
-from concurrent.futures import ThreadPoolExecutor
-# import inverse_projection_cuda
-import sys
-import os
-# sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), 'cpp')))
-
+import numpy as np
+import open3d as o3d
+import open3d.core as o3c
+from numba import cuda
 import inverse_projection_cpp
+from concurrent.futures import ThreadPoolExecutor
+from load_utils import json_read
+from segment_utils import get_instance_mask, apply_mask_to_image
+
 
 @cuda.jit
 def inverse_projection_kernel(K: np.ndarray, 
@@ -296,7 +295,24 @@ def pcd_segment_with_instance_id(pcd, color, id_list, instance_id):
     id_instance = id_list[instance_indices]
     return pcd_instance, color_instance, id_instance
 
+def pcd_load_in_o3d_tensor(pcd, color, id):
+    # pcd = torch.from_numpy(pcd)
+    pcd_o3d = o3d.t.geometry.PointCloud(pcd)
+    # pcd_o3d = o3d.t.geometry.PointCloud(o3d.core.Tensor([[0,0,0],[0,0,1]], o3d.core.float32))
+    # pcd_o3d.colors = o3d.core.Tensor.from_numpy(color, o3d.core.float32)
+# 
+    # pcd_o3d.labels = o3d.core.Tensor.from_numpy(id, o3d.core.int32)
+    return 0
+    # return pcd_o3d.to_legracy()
 
+def pcd_load_in_o3d_legacy(pcd, color, id):
+    pcd_o3d = o3d.geometry.PointCloud()
+    pcd, rgb, id = pcd_segment_with_instance_id(pcd, color, id, 0)
+    print(f"point_cloud shape is {pcd.shape}")
+    pcd_o3d.points = o3d.utility.Vector3dVector(pcd)
+    pcd_o3d.colors = o3d.utility.Vector3dVector(rgb/255)
+    return pcd_o3d
+    
 
 # 示例使用
 if __name__ == "__main__":
@@ -353,11 +369,11 @@ if __name__ == "__main__":
     print("Generated RGB shape:", rgb.shape)
     print("Generated instance ID shape:", id.shape)
 
+    # pcd = pcd_load_in_o3d_legacy(point_cloud, rgb, id)
+    pcd = pcd_load_in_o3d_tensor(point_cloud, rgb, id)
+
+    # o3d.visualization.draw([pcd])
+
 
     
-    pcd = o3d.geometry.PointCloud()
-    point_cloud, rgb, id = pcd_segment_with_instance_id(point_cloud, rgb, id, 0)
-    print(f"point_cloud shape is {point_cloud.shape}")
-    pcd.points = o3d.utility.Vector3dVector(point_cloud)
-    pcd.colors = o3d.utility.Vector3dVector(rgb/255)
-    o3d.visualization.draw([pcd])
+    
