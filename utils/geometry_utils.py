@@ -4,6 +4,9 @@ import time
 import open3d as o3d
 from segment_utils import get_instance_mask, apply_mask_to_image
 from load_utils import json_read
+import torch
+import cv2 as cv
+# import inverse_projection_cuda
 
 @cuda.jit
 def inverse_projection_kernel(K: np.ndarray, 
@@ -55,7 +58,7 @@ def inverse_projection_kernel(K: np.ndarray,
             else:
                 ids = None
 
-def inverse_projection_cuda(K, depth_image, rgb_image, instance_mask=None):
+def inverse_projection_cuda_numba(K, depth_image, rgb_image, instance_mask=None):
     height, width = depth_image.shape
 
     # 创建输出数组，在 GPU 上存储 3D 点
@@ -82,6 +85,7 @@ def inverse_projection_cuda(K, depth_image, rgb_image, instance_mask=None):
     blocks_per_grid = (blocks_per_grid_x, blocks_per_grid_y)
 
     # 启动 CUDA 内核
+    start_kernel_time = time.time()
     inverse_projection_kernel[blocks_per_grid, threads_per_block](
         K_device, 
         depth_image_device, 
@@ -95,6 +99,8 @@ def inverse_projection_cuda(K, depth_image, rgb_image, instance_mask=None):
 
     # 将结果从 GPU 拷贝回 CPU
     cuda.synchronize()
+    end_kernel_time = time.time()
+    print(f"Time taken to run kernel: {end_kernel_time - start_kernel_time} seconds")
 
     points_device.copy_to_host(points)
     colors_device.copy_to_host(colors)
@@ -152,6 +158,70 @@ def inverse_projection_cpu(K, depth_image, rgb_image, instance_mask=None, width=
     return points, colors, ids
 
 
+def inverse_projection_pytorch(K, depth_image, rgb_image, instance_mask=None):
+    start_time = time.time()
+    height, width = depth_image.shape
+
+    # Convert inputs to PyTorch tensors and move to GPU
+    depth_image_tensor = torch.tensor(depth_image, device='cuda')
+    rgb_image_tensor = torch.tensor(rgb_image, device='cuda')
+    K_tensor = torch.tensor(K, device='cuda')
+    
+    if instance_mask is not None:
+        instance_mask_tensor = torch.tensor(instance_mask, device='cuda')
+    
+    # Prepare output tensors
+    points = torch.zeros((height * width, 3), dtype=torch.float32, device='cuda')
+    colors = torch.zeros((height * width, 3), dtype=torch.uint8, device='cuda')
+    ids = torch.zeros((height * width), dtype=torch.int8, device='cuda') if instance_mask is not None else None
+
+    # Camera intrinsics
+    fx, fy = K_tensor[0, 0], K_tensor[1, 1]
+    cx, cy = K_tensor[0, 2], K_tensor[1, 2]
+
+    # Create a meshgrid of pixel coordinates
+    u, v = torch.meshgrid(torch.arange(width, device='cuda'), torch.arange(height, device='cuda'), indexing='xy')
+    u = u.flatten()
+    v = v.flatten()
+
+    # Get corresponding depth values
+    Z = depth_image_tensor[v, u]
+    
+    valid_mask = Z > 0  # Only consider valid depth points
+    
+    # Compute normalized coordinates
+    x_n = (u - cx) / fx
+    y_n = (v - cy) / fy
+
+    # Compute 3D points
+    X = x_n * Z
+    Y = y_n * Z
+
+    # Assign to output tensors
+    points[:, 0] = X
+    points[:, 1] = Y
+    points[:, 2] = Z
+    
+    # Assign colors
+    colors[:, 0] = rgb_image_tensor[v, u, 0]
+    colors[:, 1] = rgb_image_tensor[v, u, 1]
+    colors[:, 2] = rgb_image_tensor[v, u, 2]
+
+    # Handle instance mask if provided
+    if instance_mask is not None:
+        ids = instance_mask_tensor[v, u]
+        ids[~valid_mask] = 0  # Set invalid points to zero in the ID mask
+
+    # Apply valid mask to filter out invalid points
+    points = points[valid_mask]
+    colors = colors[valid_mask]
+    if instance_mask is not None:
+        ids = ids[valid_mask]
+    end_time = time.time()
+    print(f"Time taken to run PyTorch code: {end_time - start_time} seconds")
+    return points.cpu().numpy(), colors.cpu().numpy(), ids.cpu().numpy() if instance_mask is not None else None
+
+
 def pcd_segment_with_instance_id(pcd, color, id_list, instance_id):
     # 创建一个掩码，其中实例 ID 与指定 ID 匹配
     instance_indices = np.where(id_list == instance_id)
@@ -161,18 +231,21 @@ def pcd_segment_with_instance_id(pcd, color, id_list, instance_id):
     id_instance = id_list[instance_indices]
     return pcd_instance, color_instance, id_instance
 
+
+
 # 示例使用
 if __name__ == "__main__":
 
 
     start_time = time.time()
     # 假设我们有一个相机内参矩阵 K
-    K = np.array([[535.4, 0.0, 320.1],
-                  [0.0, 539.2, 247.6],
-                  [0.0, 0.0, 1.0]], dtype=np.float32)
+    K = np.array([[535.4,   0.0, 320.1],
+                  [  0.0, 539.2, 247.6],
+                  [  0.0,   0.0,   1.0]], dtype=np.float32)
 
     # 生成一个假设的深度图像
     depth_image = o3d.io.read_image("1341846647.802269.png")
+    # depth_image = cv.imread("1341846647.802269.png", cv.IMREAD_UNCHANGED)
     depth_image = np.asarray(depth_image, dtype=np.float32)
     # depth_image = np.random.uniform(0.5, 4.0, (480, 640)).astype(np.float32)
     # 生成一个随机布尔掩码，其中一半为 True
@@ -184,6 +257,7 @@ if __name__ == "__main__":
     # rgb_image = np.random.randint(0, 255, (480, 640, 3), dtype=np.uint8)
     # instance_mask = np.random.randint(0, 10, (480, 640), dtype=np.int8)
     rgb_image = o3d.io.read_image("1341846647.734820.png")
+    # rgb_image = cv.imread("1341846647.734820.png", cv.IMREAD_UNCHANGED)
     rgb_image = np.asarray(rgb_image, dtype=np.uint8)
     sem_info = json_read("1341846647.734820_info.json")
     sem_dict = {
@@ -195,8 +269,9 @@ if __name__ == "__main__":
     print(instance_mask)
 
     # 使用 CUDA 加速的逆向投影生成点云
-    point_cloud, rgb, id = inverse_projection_cuda(K, depth_image, rgb_image, instance_mask[0])
+    point_cloud, rgb, id = inverse_projection_cuda_numba(K, depth_image, rgb_image, instance_mask[0])
     # point_cloud, rgb, id = inverse_projection_cpu(K, depth_image, rgb_image, instance_mask[0])
+    # point_cloud, rgb, id = inverse_projection_pytorch(K, depth_image, rgb_image, instance_mask[0])
     non_zero_indices = np.nonzero(point_cloud[:, 2])
     
     point_cloud = point_cloud[non_zero_indices]
@@ -213,7 +288,7 @@ if __name__ == "__main__":
 
     
     pcd = o3d.geometry.PointCloud()
-    point_cloud, rgb, id = pcd_segment_with_instance_id(point_cloud, rgb, id, 1)
+    point_cloud, rgb, id = pcd_segment_with_instance_id(point_cloud, rgb, id, 0)
     print(f"point_cloud shape is {point_cloud.shape}")
     pcd.points = o3d.utility.Vector3dVector(point_cloud)
     pcd.colors = o3d.utility.Vector3dVector(rgb/255)

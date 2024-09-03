@@ -10,7 +10,7 @@ import argparse
 from utils.load_utils import json_read, img_read, dict_check, load_config
 from utils.camera_utils import Camera, quaternion_to_rotation_matrix, getWorld2View2, rotation_matrix, transformation_matrix
 from utils.segment_utils import get_instance_mask, apply_mask_to_image
-from utils.geometry_utils import inverse_projection_cuda
+from utils.geometry_utils import inverse_projection_cuda_numba
 from utils.dataset import TUMDataset
 
 

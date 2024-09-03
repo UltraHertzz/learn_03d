@@ -3,3 +3,4 @@ rgbd_dataset_freiburg3_walking_xyz/
 *.json
 *.png
 *.zip
+dist/
